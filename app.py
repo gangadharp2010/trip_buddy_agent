@@ -1,5 +1,6 @@
 
 import uuid
+import os
 import gradio as gr
 
 from agents.travel_agent import TravelAgent
@@ -475,9 +476,15 @@ if __name__ == "__main__":
 
     print("\nStarting Trip Buddy AI Travel Planner...")
 
-    demo.queue().launch(
-        server_name="127.0.0.1",
-        server_port=7860,
-        theme=gr.themes.Soft(),
+    # demo.queue().launch(
+    #     server_name="127.0.0.1",
+    #     server_port=7860,
+    #     theme=gr.themes.Soft(),
+    #     show_error=True
+    # )
+    
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.getenv("PORT", "7860")),
         show_error=True
     )
