@@ -6,6 +6,7 @@ from openai import OpenAI
 
 from config import OPENAI_API_KEY, OPENAI_MODEL
 from mcp_client.client import list_mcp_tools, call_mcp_tool
+from agents.response_formatter import ResponseFormatter
 
 
 SYSTEM_PROMPT = """
@@ -46,6 +47,8 @@ class TravelAgent:
             "travel": "travel",
             "knowledge": "knowledge"
         }
+        
+        self.formatter = ResponseFormatter()
 
     # ========================================================
     # 1. MAIN ENTRY POINT
@@ -56,41 +59,75 @@ class TravelAgent:
         if not message or not message.strip():
             return "Please enter a travel question."
 
-        if self.client:
+        message = message.strip()
 
-            try:
-                return self._ask_with_openai(message.strip())
+        try:
 
-            except Exception as exc:
+            # ==========================================
+            # 1. OPENAI + MCP ORCHESTRATION
+            # ==========================================
 
-                print(
-                    f"OpenAI/MCP orchestration failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+            if self.client:
 
                 try:
-                    return (
-                        self._fallback(message.strip())
-                        + "\n\n_(Used MCP fallback mode.)_"
+                    response = self._ask_with_openai(message)
+
+                except Exception as exc:
+
+                    print(
+                        f"OpenAI/MCP orchestration failed: "
+                        f"{type(exc).__name__}: {exc}"
                     )
 
-                except Exception as fallback_exc:
+                    # ==================================
+                    # 2. MCP FALLBACK
+                    # ==================================
 
-                    return (
-                        "I encountered an error while processing "
-                        "your request.\n\n"
-                        f"OpenAI error: {exc}\n"
-                        f"Fallback error: {fallback_exc}"
-                    )
+                    try:
+                        response = self._fallback(message)
 
-        # No OpenAI API key: use deterministic MCP fallback.
-        try:
-            return self._fallback(message.strip())
+                        if isinstance(response, str):
+                            response += (
+                                "\n\n_Used MCP fallback mode._"
+                            )
+
+                    except Exception as fallback_exc:
+
+                        print(
+                            f"Fallback failed: "
+                            f"{type(fallback_exc).__name__}: "
+                            f"{fallback_exc}"
+                        )
+
+                        return (
+                            "I encountered an error while processing "
+                            "your request.\n\n"
+                            f"OpenAI error: {exc}\n"
+                            f"Fallback error: {fallback_exc}"
+                        )
+
+            # ==========================================
+            # 3. NO OPENAI API KEY
+            # ==========================================
+
+            else:
+                response = self._fallback(message)
+
+            # ==========================================
+            # 4. FORMAT FINAL RESPONSE
+            # ==========================================
+
+            return self.formatter.format_response(response)
 
         except Exception as exc:
 
+            print(
+                f"TravelAgent error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
             return (
-                "Unable to process your request.\n\n"
+                "Unable to process your travel request.\n\n"
                 f"Error: {type(exc).__name__}: {exc}"
             )
 

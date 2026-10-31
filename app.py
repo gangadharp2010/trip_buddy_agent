@@ -1,7 +1,9 @@
 
+import uuid
 import gradio as gr
 
 from agents.travel_agent import TravelAgent
+from agents.conversation_memory import ConversationMemory
 from database.db_connection import init_db, seed_db
 
 
@@ -15,6 +17,7 @@ init_db()
 seed_db()
 
 agent = TravelAgent()
+memory = ConversationMemory()
 
 print("Database initialized successfully!")
 
@@ -28,7 +31,6 @@ CUSTOM_CSS = """
     --trip-primary: #0d9488;
     --trip-primary-dark: #0f766e;
     --trip-bg: #f5f8fa;
-    --trip-card: #ffffff;
 }
 
 .gradio-container {
@@ -95,11 +97,6 @@ CUSTOM_CSS = """
     white-space: normal !important;
 }
 
-.section-title {
-    color: #0f766e;
-    font-weight: 700;
-}
-
 .footer-note {
     text-align: center;
     color: #64748b;
@@ -127,65 +124,109 @@ CUSTOM_CSS = """
 
 
 # ============================================================
-# 3. CHAT RESPONSE HANDLER
+# 3. CHAT RESPONSE HANDLER WITH MEMORY
 # ============================================================
 
-def respond(message, history):
-
-    if not message or not message.strip():
-        return history or [], ""
+def respond(message, history, session_id):
 
     history = list(history or [])
 
-    # Add user message immediately.
-    history.append({
-        "role": "user",
-        "content": message.strip()
-    })
+    if not message or not message.strip():
+        return history, "", session_id
+
+    message = message.strip()
+
+    # Ensure a session ID exists.
+    if not session_id:
+        session_id = str(uuid.uuid4())
 
     try:
-        print(f"User question: {message.strip()}")
+        print(f"Session: {session_id}")
+        print(f"User question: {message}")
 
-        # Call the existing MCP-enabled TravelAgent.
-        answer = agent.ask(message.strip())
+        # Step 1: Extract new trip details.
+        new_profile = memory.extract_profile(message)
+
+        # Step 2: Merge with previously saved trip details.
+        profile = memory.update_profile(
+            session_id,
+            new_profile
+        )
+
+        # Step 3: Build context from previous conversation.
+        context_prompt = memory.build_context(
+            session_id,
+            message
+        )
+
+        # Step 4: Save current user message.
+        memory.save_message(
+            session_id,
+            "user",
+            message
+        )
+
+        # Step 5: Call existing MCP-enabled TravelAgent.
+        answer = agent.ask(context_prompt)
 
         if not isinstance(answer, str):
             answer = str(answer)
 
+        # Step 6: Save assistant response.
+        memory.save_message(
+            session_id,
+            "assistant",
+            answer
+        )
+
+        print("Memory updated successfully.")
+
     except Exception as exc:
 
         print(
-            f"Application error: {type(exc).__name__}: {exc}"
+            f"Application error: "
+            f"{type(exc).__name__}: {exc}"
         )
 
         answer = (
             "Sorry, I encountered an issue while planning "
             "your trip.\n\n"
-            f"**Error:** {type(exc).__name__}: {exc}"
+            f"Error: {type(exc).__name__}: {exc}"
         )
+
+    history.append({
+        "role": "user",
+        "content": message
+    })
 
     history.append({
         "role": "assistant",
         "content": answer
     })
 
-    return history, ""
+    return history, "", session_id
 
 
 # ============================================================
-# 4. CLEAR CHAT
+# 4. CLEAR CHAT AND MEMORY
 # ============================================================
 
-def clear_chat():
-    return [], ""
+def clear_chat(session_id):
+
+    if session_id:
+        memory.clear_session(session_id)
+
+    print("Conversation and memory cleared.")
+
+    return [], "", session_id
 
 
 # ============================================================
 # 5. QUICK PROMPT HANDLER
 # ============================================================
 
-def quick_prompt(prompt, history):
-    return respond(prompt, history)
+def quick_prompt(prompt, history, session_id):
+    return respond(prompt, history, session_id)
 
 
 # ============================================================
@@ -196,6 +237,11 @@ with gr.Blocks(
     title="Trip Buddy | AI Travel Planner",
     css=CUSTOM_CSS
 ) as demo:
+
+    # One unique session identifier per browser session.
+    session_state = gr.State(
+        value=lambda: str(uuid.uuid4())
+    )
 
     # --------------------------------------------------------
     # HEADER
@@ -265,30 +311,28 @@ with gr.Blocks(
             - 📍 Discover destinations
             - 💰 Calculate trip costs
             - 👥 Plan group travel
-            - 🧠 Retrieve travel knowledge
+            - 🧠 Remember previous conversations
             - 🌦️ Provide seasonal guidance
+            - 📚 Retrieve travel knowledge
             """)
 
             gr.Markdown("---")
 
-            gr.Markdown("### 🔌 Connected services")
+            gr.Markdown("### 🧠 Conversation Memory")
 
             gr.HTML("""
                 <div class="status-card">
-                    <p>🟢 Travel MCP Server</p>
-                    <p>🟢 Knowledge MCP Server</p>
-                    <p>🟢 SQLite Database</p>
-                    <p>🟢 RAG Retrieval</p>
+                    <p>🟢 Session memory enabled</p>
+                    <p>🟢 SQLite persistence enabled</p>
+                    <p>🟢 Context retrieval enabled</p>
                 </div>
             """)
 
-            gr.Markdown(
-                """
+            gr.Markdown("""
                 <div class="footer-note">
                     Demo estimates only. Not live travel quotes.
                 </div>
-                """
-            )
+            """)
 
         # ====================================================
         # RIGHT CHAT PANEL
@@ -301,10 +345,11 @@ with gr.Blocks(
         ):
 
             with gr.Row():
+
                 gr.Markdown("## 💬 Travel Assistant")
 
                 clear_btn = gr.Button(
-                    "🗑️ Clear chat",
+                    "🗑️ Clear chat and memory",
                     size="sm",
                     variant="secondary"
                 )
@@ -345,15 +390,13 @@ with gr.Blocks(
                     elem_classes=["primary-action"]
                 )
 
-            gr.Markdown(
-                """
+            gr.Markdown("""
                 <div class="footer-note">
-                    Trip Buddy uses MCP tools and RAG to answer
-                    travel questions. Verify live prices and conditions
+                    Trip Buddy remembers trip details during your
+                    session. Verify live prices and conditions
                     before booking.
                 </div>
-                """
-            )
+            """)
 
     # ========================================================
     # 7. EVENT HANDLERS
@@ -362,18 +405,18 @@ with gr.Blocks(
     # Enter key
     msg.submit(
         fn=respond,
-        inputs=[msg, chatbot],
-        outputs=[chatbot, msg]
+        inputs=[msg, chatbot, session_state],
+        outputs=[chatbot, msg, session_state]
     )
 
     # Send button
     send_btn.click(
         fn=respond,
-        inputs=[msg, chatbot],
-        outputs=[chatbot, msg]
+        inputs=[msg, chatbot, session_state],
+        outputs=[chatbot, msg, session_state]
     )
 
-    # Quick prompt configuration
+    # Quick prompts
     quick_prompts = [
         (
             btn_list,
@@ -381,7 +424,8 @@ with gr.Blocks(
         ),
         (
             btn_goa,
-            "We are 4 friends with ₹12,000 each. Can we do Goa for 3 nights?"
+            "We are 4 friends with ₹12,000 each. "
+            "Can we do Goa for 3 nights?"
         ),
         (
             btn_manali,
@@ -393,7 +437,8 @@ with gr.Blocks(
         ),
         (
             btn_budget,
-            "Which trips fit ₹8,000 each for 3 friends, 2 nights?"
+            "Which trips fit ₹8,000 each for "
+            "3 friends, 2 nights?"
         )
     ]
 
@@ -403,19 +448,21 @@ with gr.Blocks(
             fn=quick_prompt,
             inputs=[
                 gr.State(value=prompt),
-                chatbot
+                chatbot,
+                session_state
             ],
             outputs=[
                 chatbot,
-                msg
+                msg,
+                session_state
             ]
         )
 
-    # Clear chat
+    # Clear conversation and saved memory
     clear_btn.click(
         fn=clear_chat,
-        inputs=None,
-        outputs=[chatbot, msg],
+        inputs=[session_state],
+        outputs=[chatbot, msg, session_state],
         queue=False
     )
 
